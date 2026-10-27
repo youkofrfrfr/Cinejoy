@@ -39,7 +39,7 @@ class handler(BaseHTTPRequestHandler):
             self.command,
             self.headers,
             body,
-            embedded=params.get("embed") == ["1"],
+            embedded="1" in params.get("embed", []),
         )
         self.send_response(status)
         for key, value in headers.items():

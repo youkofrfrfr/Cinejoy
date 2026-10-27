@@ -2,6 +2,17 @@
   "version": 2,
   "routes": [
     {
+      "src": "^/$",
+      "has": [
+        {
+          "type": "query",
+          "key": "embed",
+          "value": "1"
+        }
+      ],
+      "dest": "/api/proxy?path=%2F&embed=1"
+    },
+    {
       "src": "/cinejoy",
       "dest": "/api/proxy?path=sec.html&embed=1"
     },
