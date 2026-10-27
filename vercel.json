@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "src": "/cinejoy",
+      "dest": "/api/proxy?path=sec.html&embed=1"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/proxy?path=$1"
+    }
+  ]
+}
