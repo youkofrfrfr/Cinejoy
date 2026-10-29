@@ -7,7 +7,6 @@ import zlib
 
 ORIGIN = "https://cinejoy.pk"
 
-# Regex to strip the ad script
 AD_SCRIPT = re.compile(
     r"(?is)<script>\s*\(function \(\) \{\s*var adPref = localStorage\.getItem\(\"addies\"\).*?"
     r"\}\)\(\);\s*</script>"
@@ -19,8 +18,9 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if query:
         upstream_url += "?" + query
 
-    # 1. Drop accept-encoding so we don't get gzip binary
-    excluded = {"host", "connection", "content-length", "accept-encoding"}
+    # 1. We MUST let 'range' and 'accept-encoding' pass through for video to work.
+    # We only exclude headers that break the proxy routing.
+    excluded = {"host", "connection", "content-length"}
     headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
     
     headers["referer"] = f"{ORIGIN}/"
@@ -44,31 +44,31 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     content_type = response_headers.get("Content-Type", "")
     content_encoding = response_headers.get("Content-Encoding", "").lower()
 
-    if "gzip" in content_encoding:
+    # 2. Only decompress HTML/JS. DO NOT decompress video chunks (.ts, .mp4) or it will corrupt them.
+    if "gzip" in content_encoding and "text" in content_type:
         try: payload = gzip.decompress(payload)
         except Exception: pass
-    elif "deflate" in content_encoding:
+    elif "deflate" in content_encoding and "text" in content_type:
         try: payload = zlib.decompress(payload)
         except Exception: pass
 
-    # 2. Rewrite HTML to bypass CORS and ServiceWorker restrictions
     if "text/html" in content_type:
         try:
             text_payload = payload.decode("utf-8", errors="replace")
             text_payload = AD_SCRIPT.sub("", text_payload)
             
-            # FIX 1: Prepend the crossorigin attribute to bypass CORS module blocks
+            # Inject crossorigin to bypass JS CORS blocks
             text_payload = re.sub(r'<script type="module"', '<script type="module" crossorigin', text_payload)
             
-            # FIX 2: Stop the Service Worker from crashing the page
-            text_payload = text_payload.replace("navigator.serviceWorker.register('/service-worker.js');", "// SW disabled by proxy")
+            # Stop Service Worker from crashing
+            text_payload = text_payload.replace("navigator.serviceWorker.register('/service-worker.js');", "// SW disabled")
             
             payload = text_payload.encode("utf-8")
         except Exception:
             pass
 
     filtered_headers = {}
-    # 3. Nuke encoding and framing headers completely
+    # 3. Strip CSP and X-Frame so the iframe works
     excluded_response = {
         "content-length", "content-encoding", "transfer-encoding", "connection",
         "vary", "x-frame-options", "content-security-policy", "cross-origin-opener-policy",
@@ -79,13 +79,19 @@ def fetch_upstream(path, query, method, request_headers, body=None):
         if key.lower() not in excluded_response:
             filtered_headers[key] = value
             
+    # 4. Preserve Content-Range for video seeking
+    if "Content-Range" in response_headers:
+        filtered_headers["Content-Range"] = response_headers["Content-Range"]
+        filtered_headers["Accept-Ranges"] = "bytes"
+            
+    # Only set Content-Length if it's not a 206 Partial Content request
     if status != 206:
         filtered_headers["Content-Length"] = str(len(payload))
     
-    # 4. Force CORS headers for all modules and media
     filtered_headers["Access-Control-Allow-Origin"] = "*"
     filtered_headers["Access-Control-Allow-Headers"] = "*"
     filtered_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    filtered_headers["Access-Control-Expose-Headers"] = "Content-Range, Accept-Ranges, Content-Length"
 
     return status, filtered_headers, payload
 
@@ -100,6 +106,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges")
         self.end_headers()
 
     def proxy(self):
