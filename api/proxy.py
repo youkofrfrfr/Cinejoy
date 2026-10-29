@@ -7,6 +7,7 @@ import zlib
 
 ORIGIN = "https://cinejoy.pk"
 
+# Regex to strip the ad script
 AD_SCRIPT = re.compile(
     r"(?is)<script>\s*\(function \(\) \{\s*var adPref = localStorage\.getItem\(\"addies\"\).*?"
     r"\}\)\(\);\s*</script>"
@@ -18,11 +19,10 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if query:
         upstream_url += "?" + query
 
-    # 1. Strictly drop accept-encoding so Vercel doesn't choke on gzip
+    # 1. Drop accept-encoding so we don't get gzip binary
     excluded = {"host", "connection", "content-length", "accept-encoding"}
     headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
     
-    # 2. Fake Origin and Referer to bypass hotlink protection
     headers["referer"] = f"{ORIGIN}/"
     headers["origin"] = ORIGIN
     
@@ -44,7 +44,6 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     content_type = response_headers.get("Content-Type", "")
     content_encoding = response_headers.get("Content-Encoding", "").lower()
 
-    # 3. Decompress manually if the server forced gzip
     if "gzip" in content_encoding:
         try: payload = gzip.decompress(payload)
         except Exception: pass
@@ -52,25 +51,24 @@ def fetch_upstream(path, query, method, request_headers, body=None):
         try: payload = zlib.decompress(payload)
         except Exception: pass
 
-    # 4. Strip ads and fix SvelteKit paths
+    # 2. Rewrite HTML to bypass CORS and ServiceWorker restrictions
     if "text/html" in content_type:
         try:
             text_payload = payload.decode("utf-8", errors="replace")
             text_payload = AD_SCRIPT.sub("", text_payload)
             
-            # Keep the base tag so the scripts load from Cinejoy, NOT Vercel.
-            # This stops the 502 error on JavaScript files.
-            if "<head>" in text_payload:
-                text_payload = text_payload.replace("<head>", f'<head><base href="{ORIGIN}/">')
-            elif "<HEAD>" in text_payload:
-                text_payload = text_payload.replace("<HEAD>", f'<HEAD><base href="{ORIGIN}/">')
-                
+            # FIX 1: Prepend the crossorigin attribute to bypass CORS module blocks
+            text_payload = re.sub(r'<script type="module"', '<script type="module" crossorigin', text_payload)
+            
+            # FIX 2: Stop the Service Worker from crashing the page
+            text_payload = text_payload.replace("navigator.serviceWorker.register('/service-worker.js');", "// SW disabled by proxy")
+            
             payload = text_payload.encode("utf-8")
         except Exception:
             pass
 
     filtered_headers = {}
-    # 5. Nuke encoding and framing headers completely
+    # 3. Nuke encoding and framing headers completely
     excluded_response = {
         "content-length", "content-encoding", "transfer-encoding", "connection",
         "vary", "x-frame-options", "content-security-policy", "cross-origin-opener-policy",
@@ -84,7 +82,7 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if status != 206:
         filtered_headers["Content-Length"] = str(len(payload))
     
-    # 6. Allow CORS and embedded video
+    # 4. Force CORS headers for all modules and media
     filtered_headers["Access-Control-Allow-Origin"] = "*"
     filtered_headers["Access-Control-Allow-Headers"] = "*"
     filtered_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
