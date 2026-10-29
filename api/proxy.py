@@ -21,11 +21,11 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if query:
         upstream_url += "?" + query
 
-    # 1. Drop accept-encoding so we receive plain text, not gzipped binary
+    # Drop accept-encoding so we don't get gzip garbage
     excluded = {"host", "connection", "content-length", "accept-encoding"}
     headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
     
-    # 2. Force Origin and Referer so Cinejoy/CDN allows the connection
+    # Fake the Origin and Referer so Cinejoy's CDN doesn't block us
     headers["referer"] = f"{ORIGIN}/"
     headers["origin"] = ORIGIN
     
@@ -51,36 +51,27 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     content_type = response_headers.get("Content-Type", "")
     content_encoding = response_headers.get("Content-Encoding", "").lower()
 
-    # 3. Manually decompress if upstream ignored our headers and sent gzip
     if "gzip" in content_encoding:
-        try:
-            payload = gzip.decompress(payload)
-        except Exception:
-            pass
+        try: payload = gzip.decompress(payload)
+        except Exception: pass
     elif "deflate" in content_encoding:
-        try:
-            payload = zlib.decompress(payload)
-        except Exception:
-            pass
+        try: payload = zlib.decompress(payload)
+        except Exception: pass
 
-    # 4. Strip ads and fix SvelteKit asset paths
     if "text/html" in content_type:
         try:
             text_payload = payload.decode("utf-8", errors="replace")
             text_payload = AD_SCRIPT.sub("", text_payload)
             
-            # Inject <base> tag so JS/CSS assets load correctly
-            if "<head>" in text_payload:
-                text_payload = text_payload.replace("<head>", f'<head><base href="{ORIGIN}/">')
-            elif "<HEAD>" in text_payload:
-                text_payload = text_payload.replace("<HEAD>", f'<HEAD><base href="{ORIGIN}/">')
+            # DO NOT inject <base href="https://cinejoy.pk/">. 
+            # We want the browser to load scripts through YOUR Vercel proxy so it doesn't get blocked by CORS.
                 
             payload = text_payload.encode("utf-8")
         except Exception:
             pass
 
     filtered_headers = {}
-    # 5. Strip encoding headers so Vercel doesn't try to re-encode
+    # Strip CSP, X-Frame-Options, and Encoding headers
     excluded_response = {
         "content-length", "content-encoding", "transfer-encoding", "connection",
         "vary", "x-frame-options", "content-security-policy"
@@ -90,11 +81,10 @@ def fetch_upstream(path, query, method, request_headers, body=None):
         if key.lower() not in excluded_response:
             filtered_headers[key] = value
             
-    # Only set content length if it's not a 206 Partial Content (video stream)
     if status != 206:
         filtered_headers["Content-Length"] = str(len(payload))
     
-    # 6. Allow embedding and video playback
+    # Allow all Cross-Origin requests
     filtered_headers["Access-Control-Allow-Origin"] = "*"
     filtered_headers["Access-Control-Allow-Headers"] = "*"
     filtered_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
