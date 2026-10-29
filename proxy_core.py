@@ -1,84 +1,37 @@
-from http.cookiejar import CookieJar
-from urllib.error import HTTPError, URLError
-from urllib.request import HTTPCookieProcessor, Request, build_opener
-import re
+from flask import Flask, request, Response, send_from_directory
+from proxy_core import fetch_upstream
+import os
 
-ORIGIN = "https://cinejoy.pk"
-UPSTREAM_OPENER = build_opener(HTTPCookieProcessor(CookieJar()))
+app = Flask(__name__, static_folder='.')
 
-AD_SCRIPT = re.compile(
-    r"(?is)<script>\s*\(function \(\) \{\s*var adPref = localStorage\.getItem\(\"addies\"\).*?"
-    r"\}\)\(\);\s*</script>"
-)
+@app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/<path:path>', methods=['GET', 'POST', 'OPTIONS'])
+def proxy(path):
+    # Serve static files directly if they exist locally (like index.html)
+    if path in ['', 'index.html', 'sec.html', 'favicon.ico'] or path.startswith('static/'):
+        if os.path.exists(path) and path != '':
+            return send_from_directory('.', path)
+        return send_from_directory('.', 'index.html')
 
-def fetch_upstream(path, query, method, request_headers, body=None, embedded=False):
-    path = "/" + path.lstrip("/")
-    upstream_url = f"{ORIGIN}{path}"
-    if query:
-        upstream_url += "?" + query
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        return Response('', status=204, headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+        })
 
-    # Do not strip 'range' header (needed for video streaming)
-    excluded = {"host", "connection", "content-length"}
-    headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
-    
-    headers["referer"] = f"{ORIGIN}/"
-    headers["origin"] = ORIGIN
-    
-    if "cookie" in request_headers:
-        headers["cookie"] = request_headers["cookie"]
+    # Proxy all other requests (including /cinejoy and Svelte assets)
+    status, headers, payload = fetch_upstream(
+        path=path,
+        query=request.query_string.decode('utf-8'),
+        method=request.method,
+        request_headers=dict(request.headers),
+        body=request.get_data() if request.method == 'POST' else None
+    )
 
-    req = Request(upstream_url, data=body, headers=headers, method=method)
+    return Response(payload, status=status, headers=headers)
 
-    try:
-        response = UPSTREAM_OPENER.open(req, timeout=15)
-        status = response.status
-        payload = response.read()
-        response_headers = response.headers
-    except HTTPError as error:
-        status = error.code
-        payload = error.read()
-        response_headers = error.headers
-    except URLError as error:
-        status = 502
-        payload = str(error).encode("utf-8")
-        response_headers = {"Content-Type": "text/plain; charset=utf-8"}
-
-    content_type = response_headers.get("Content-Type", "")
-    
-    # Only modify HTML, not video chunks
-    if "text/html" in content_type:
-        try:
-            text_payload = payload.decode("utf-8", errors="replace")
-            text_payload = AD_SCRIPT.sub("", text_payload)
-            
-            # FIX: Inject base tag so SvelteKit assets load from Cinejoy, not your Vercel URL
-            if "<head>" in text_payload:
-                text_payload = text_payload.replace("<head>", f'<head><base href="{ORIGIN}/">')
-            elif "<HEAD>" in text_payload:
-                text_payload = text_payload.replace("<HEAD>", f'<HEAD><base href="{ORIGIN}/">')
-                
-            payload = text_payload.encode("utf-8")
-        except Exception:
-            pass
-
-    filtered_headers = {}
-    excluded_response = {
-        "content-length", "content-encoding", "transfer-encoding", "connection",
-        "vary", "x-frame-options"
-    }
-    
-    for key, value in response_headers.items():
-        if key.lower() not in excluded_response:
-            filtered_headers[key] = value
-            
-    # If it's a 206 Partial Content (video seeking), let the original Content-Length pass
-    if status != 206:
-        filtered_headers["Content-Length"] = str(len(payload))
-    
-    # FIX: Allow all origins and media sources
-    filtered_headers["Access-Control-Allow-Origin"] = "*"
-    filtered_headers["Access-Control-Allow-Headers"] = "*"
-    filtered_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    filtered_headers["Content-Security-Policy"] = "default-src * 'unsafe-inline' 'unsafe-eval'; media-src * blob: data:;"
-
-    return status, filtered_headers, payload
+if __name__ == '__main__':
+    print("Proxy running on http://localhost:4173")
+    app.run(port=4173, debug=True)
