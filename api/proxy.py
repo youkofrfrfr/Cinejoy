@@ -1,14 +1,11 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qsl, parse_qs, urlencode, urlsplit
-from http.cookiejar import CookieJar
-from urllib.error import HTTPError, URLError
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.request import Request, urlopen
 import re
 import gzip
 import zlib
 
 ORIGIN = "https://cinejoy.pk"
-UPSTREAM_OPENER = build_opener(HTTPCookieProcessor(CookieJar()))
 
 AD_SCRIPT = re.compile(
     r"(?is)<script>\s*\(function \(\) \{\s*var adPref = localStorage\.getItem\(\"addies\"\).*?"
@@ -21,11 +18,11 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if query:
         upstream_url += "?" + query
 
-    # Drop accept-encoding so we don't get gzip garbage
+    # 1. Strictly drop accept-encoding so Vercel doesn't choke on gzip
     excluded = {"host", "connection", "content-length", "accept-encoding"}
     headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
     
-    # Fake the Origin and Referer so Cinejoy's CDN doesn't block us
+    # 2. Fake Origin and Referer to bypass hotlink protection
     headers["referer"] = f"{ORIGIN}/"
     headers["origin"] = ORIGIN
     
@@ -35,22 +32,19 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     req = Request(upstream_url, data=body, headers=headers, method=method)
 
     try:
-        response = UPSTREAM_OPENER.open(req, timeout=15)
+        response = urlopen(req, timeout=15)
         status = response.status
         payload = response.read()
         response_headers = response.headers
-    except HTTPError as error:
-        status = error.code
-        payload = error.read()
-        response_headers = error.headers
     except Exception as error:
-        status = 502
-        payload = str(error).encode("utf-8")
-        response_headers = {"Content-Type": "text/plain; charset=utf-8"}
+        status = getattr(error, 'code', 502)
+        payload = getattr(error, 'read', lambda: str(error).encode('utf-8'))()
+        response_headers = getattr(error, 'headers', {"Content-Type": "text/plain"})
 
     content_type = response_headers.get("Content-Type", "")
     content_encoding = response_headers.get("Content-Encoding", "").lower()
 
+    # 3. Decompress manually if the server forced gzip
     if "gzip" in content_encoding:
         try: payload = gzip.decompress(payload)
         except Exception: pass
@@ -58,23 +52,29 @@ def fetch_upstream(path, query, method, request_headers, body=None):
         try: payload = zlib.decompress(payload)
         except Exception: pass
 
+    # 4. Strip ads and fix SvelteKit paths
     if "text/html" in content_type:
         try:
             text_payload = payload.decode("utf-8", errors="replace")
             text_payload = AD_SCRIPT.sub("", text_payload)
             
-            # DO NOT inject <base href="https://cinejoy.pk/">. 
-            # We want the browser to load scripts through YOUR Vercel proxy so it doesn't get blocked by CORS.
+            # Keep the base tag so the scripts load from Cinejoy, NOT Vercel.
+            # This stops the 502 error on JavaScript files.
+            if "<head>" in text_payload:
+                text_payload = text_payload.replace("<head>", f'<head><base href="{ORIGIN}/">')
+            elif "<HEAD>" in text_payload:
+                text_payload = text_payload.replace("<HEAD>", f'<HEAD><base href="{ORIGIN}/">')
                 
             payload = text_payload.encode("utf-8")
         except Exception:
             pass
 
     filtered_headers = {}
-    # Strip CSP, X-Frame-Options, and Encoding headers
+    # 5. Nuke encoding and framing headers completely
     excluded_response = {
         "content-length", "content-encoding", "transfer-encoding", "connection",
-        "vary", "x-frame-options", "content-security-policy"
+        "vary", "x-frame-options", "content-security-policy", "cross-origin-opener-policy",
+        "cross-origin-embedder-policy", "cross-origin-resource-policy"
     }
     
     for key, value in response_headers.items():
@@ -84,22 +84,18 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if status != 206:
         filtered_headers["Content-Length"] = str(len(payload))
     
-    # Allow all Cross-Origin requests
+    # 6. Allow CORS and embedded video
     filtered_headers["Access-Control-Allow-Origin"] = "*"
     filtered_headers["Access-Control-Allow-Headers"] = "*"
     filtered_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
 
     return status, filtered_headers, payload
 
+
 class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.proxy()
-
-    def do_HEAD(self):
-        self.proxy()
-
-    def do_POST(self):
-        self.proxy()
+    def do_GET(self): self.proxy()
+    def do_HEAD(self): self.proxy()
+    def do_POST(self): self.proxy()
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -129,11 +125,7 @@ class handler(BaseHTTPRequestHandler):
                 body = self.rfile.read(length) if length > 0 else None
 
             status, headers, payload = fetch_upstream(
-                path,
-                urlencode(query_pairs),
-                self.command,
-                self.headers,
-                body,
+                path, urlencode(query_pairs), self.command, self.headers, body
             )
             
             self.send_response(status)
