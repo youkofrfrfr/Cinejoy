@@ -4,6 +4,8 @@ from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 import re
+import gzip
+import zlib
 
 ORIGIN = "https://cinejoy.pk"
 UPSTREAM_OPENER = build_opener(HTTPCookieProcessor(CookieJar()))
@@ -19,9 +21,11 @@ def fetch_upstream(path, query, method, request_headers, body=None):
     if query:
         upstream_url += "?" + query
 
-    excluded = {"host", "connection", "content-length"}
+    # 1. Drop accept-encoding so we receive plain text, not gzipped binary
+    excluded = {"host", "connection", "content-length", "accept-encoding"}
     headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
     
+    # 2. Force Origin and Referer so Cinejoy/CDN allows the connection
     headers["referer"] = f"{ORIGIN}/"
     headers["origin"] = ORIGIN
     
@@ -45,36 +49,55 @@ def fetch_upstream(path, query, method, request_headers, body=None):
         response_headers = {"Content-Type": "text/plain; charset=utf-8"}
 
     content_type = response_headers.get("Content-Type", "")
-    
+    content_encoding = response_headers.get("Content-Encoding", "").lower()
+
+    # 3. Manually decompress if upstream ignored our headers and sent gzip
+    if "gzip" in content_encoding:
+        try:
+            payload = gzip.decompress(payload)
+        except Exception:
+            pass
+    elif "deflate" in content_encoding:
+        try:
+            payload = zlib.decompress(payload)
+        except Exception:
+            pass
+
+    # 4. Strip ads and fix SvelteKit asset paths
     if "text/html" in content_type:
         try:
             text_payload = payload.decode("utf-8", errors="replace")
             text_payload = AD_SCRIPT.sub("", text_payload)
+            
+            # Inject <base> tag so JS/CSS assets load correctly
             if "<head>" in text_payload:
                 text_payload = text_payload.replace("<head>", f'<head><base href="{ORIGIN}/">')
             elif "<HEAD>" in text_payload:
                 text_payload = text_payload.replace("<HEAD>", f'<HEAD><base href="{ORIGIN}/">')
+                
             payload = text_payload.encode("utf-8")
         except Exception:
             pass
 
     filtered_headers = {}
+    # 5. Strip encoding headers so Vercel doesn't try to re-encode
     excluded_response = {
         "content-length", "content-encoding", "transfer-encoding", "connection",
-        "vary", "x-frame-options"
+        "vary", "x-frame-options", "content-security-policy"
     }
     
     for key, value in response_headers.items():
         if key.lower() not in excluded_response:
             filtered_headers[key] = value
             
+    # Only set content length if it's not a 206 Partial Content (video stream)
     if status != 206:
         filtered_headers["Content-Length"] = str(len(payload))
     
+    # 6. Allow embedding and video playback
     filtered_headers["Access-Control-Allow-Origin"] = "*"
     filtered_headers["Access-Control-Allow-Headers"] = "*"
     filtered_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    filtered_headers["Content-Security-Policy"] = "default-src * 'unsafe-inline' 'unsafe-eval'; media-src * blob: data:;"
 
     return status, filtered_headers, payload
 
