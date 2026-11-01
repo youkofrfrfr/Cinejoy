@@ -218,12 +218,8 @@
 
     dialog.showModal();
     document.querySelector('#continue').addEventListener('click', () => {
-      const frame = document.querySelector('#cinejoy');
-      frame.src = '/?embed=1';
-      document.body.classList.add('ready');
-      document.querySelector('#landing').classList.add('embedded');
       dialog.close();
-      frame.focus();
+      window.location.assign('/?embed=1');
     });
     document.querySelector('#cancel').addEventListener('click', () => dialog.close());
   </script>
