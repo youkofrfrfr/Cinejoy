@@ -2,6 +2,10 @@
   "version": 2,
   "routes": [
     {
+      "src": "^/_media_proxy/?$",
+      "dest": "/api/proxy?path=_media_proxy"
+    },
+    {
       "src": "^/logs/?$",
       "dest": "/logs.html"
     },

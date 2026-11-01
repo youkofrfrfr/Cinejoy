@@ -152,7 +152,9 @@ history.replaceState(null, '', '/?embed=1');
   function mediaProxy(value) {
     try {
       var url = typeof value === 'string' ? value : (value && value.url ? value.url : String(value || ''));
-      if (/^https?:\\/\\//i.test(url) && new URL(url, location.href).origin !== location.origin) {
+      if (/^https?:\\/\\//i.test(url)
+          && (\\.m3u8(?:$|\\?)|\\.mpd(?:$|\\?))/i.test(url)
+          && new URL(url, location.href).origin !== location.origin) {
         return '/_media_proxy?' + new URLSearchParams({url: url});
       }
     } catch (_) {}
