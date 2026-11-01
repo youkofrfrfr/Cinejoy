@@ -16,6 +16,10 @@ class CinejoyHandler(SimpleHTTPRequestHandler):
     def proxy_request(self):
         request = urlsplit(self.path)
         query_pairs = parse_qsl(request.query, keep_blank_values=True)
+        if request.path in {"/logs", "/logs.html"}:
+            self.path = "/logs.html"
+            super().do_GET()
+            return
         embedded = request.path == "/cinejoy" or (
             request.path == "/" and ("embed", "1") in query_pairs
         )

@@ -2,6 +2,10 @@
   "version": 2,
   "routes": [
     {
+      "src": "^/logs/?$",
+      "dest": "/logs.html"
+    },
+    {
       "src": "^/$",
       "has": [
         {

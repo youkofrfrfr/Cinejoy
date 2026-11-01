@@ -156,6 +156,15 @@
 
     #cancel { background: transparent; }
 
+    #logs-link {
+      display: block;
+      align-self: center;
+      margin-top: 1rem;
+      color: var(--muted);
+      font: 700 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-align: center;
+    }
+
     button:focus-visible {
       outline: 3px solid #4d8cff;
       outline-offset: 3px;
@@ -194,6 +203,7 @@
         <button id="cancel" type="button">Cancel</button>
         <button id="continue" type="button">Continue</button>
       </div>
+      <a id="logs-link" href="/logs">View error logs</a>
     </div>
   </dialog>
 

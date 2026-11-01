@@ -64,6 +64,67 @@ def fetch_upstream(path, query, method, request_headers, body=None, embedded=Fal
             text = text.replace("navigator.serviceWorker.register('/service-worker.js');", "void 0;")
             startup = '''<script>
 history.replaceState(null, '', '/?embed=1');
+(function () {
+  var storageKey = 'cinejoy-error-logs-v1';
+  var originalError = console.error ? console.error.bind(console) : function () {};
+  function record(type, message) {
+    try {
+      var entries = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      entries.push({
+        time: new Date().toISOString(),
+        type: String(type),
+        message: String(message || '').slice(0, 4000)
+      });
+      if (entries.length > 200) entries = entries.slice(-200);
+      localStorage.setItem(storageKey, JSON.stringify(entries));
+    } catch (_) {}
+  }
+  console.error = function () {
+    record('console.error', Array.from(arguments).map(function (value) {
+      try { return typeof value === 'string' ? value : JSON.stringify(value); }
+      catch (_) { return String(value); }
+    }).join(' '));
+    return originalError.apply(console, arguments);
+  };
+  window.addEventListener('error', function (event) {
+    record('page.error', (event.message || 'Unknown error') + (event.filename ? ' at ' + event.filename + ':' + event.lineno + ':' + event.colno : '') + (event.error && event.error.stack ? '\\n' + event.error.stack : ''));
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event.reason && event.reason.stack ? event.reason.stack : (event.reason && event.reason.message ? event.reason.message : String(event.reason || 'Unhandled promise rejection'));
+    record('unhandledrejection', reason);
+  });
+  window.addEventListener('load', function () {
+    record('startup', 'Page loaded: ' + location.href + ' | ' + navigator.userAgent);
+  }, { once: true });
+  var originalFetch = window.fetch;
+  if (originalFetch) {
+    window.fetch = function () {
+      var url = arguments[0] && typeof arguments[0] === 'object' && arguments[0].url ? arguments[0].url : String(arguments[0] || '');
+      return originalFetch.apply(this, arguments).then(function (response) {
+        if (response.status >= 400) record('http.error', response.status + ' ' + response.statusText + ' ' + url);
+        return response;
+      }).catch(function (error) {
+        record('network.error', url + ' - ' + (error && error.message ? error.message : String(error)));
+        throw error;
+      });
+    };
+  }
+  var originalXHROpen = XMLHttpRequest.prototype.open;
+  var originalXHRSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this.__cinejoyUrl = String(url || '');
+    return originalXHROpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function () {
+    this.addEventListener('load', function () {
+      if (this.status >= 400) record('http.error', this.status + ' ' + this.__cinejoyUrl);
+    });
+    this.addEventListener('error', function () {
+      record('network.error', this.__cinejoyUrl || 'XMLHttpRequest failed');
+    });
+    return originalXHRSend.apply(this, arguments);
+  };
+})();
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations().then(registrations =>
     Promise.all(registrations.map(registration => registration.unregister()))
