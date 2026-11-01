@@ -61,11 +61,16 @@ def fetch_upstream(path, query, method, request_headers, body=None, embedded=Fal
     if "text/html" in content_type:
         text = AD_SCRIPT.sub("", payload.decode("utf-8", errors="replace"))
         if embedded:
-            text = text.replace(
-                "<head>",
-                "<head><script>history.replaceState(null, '', '/?embed=1')</script>",
-                1,
-            )
+            text = text.replace("navigator.serviceWorker.register('/service-worker.js');", "void 0;")
+            startup = '''<script>
+history.replaceState(null, '', '/?embed=1');
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(registrations =>
+    Promise.all(registrations.map(registration => registration.unregister()))
+  ).catch(() => {});
+}
+</script>'''
+            text = text.replace("<head>", "<head>" + startup, 1)
         payload = text.encode("utf-8")
 
     filtered_headers = {}

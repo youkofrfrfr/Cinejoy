@@ -12,7 +12,7 @@ AD_SCRIPT = re.compile(
     r"\}\)\(\);\s*</script>"
 )
 
-def fetch_upstream(path, query, method, request_headers, body=None):
+def fetch_upstream(path, query, method, request_headers, body=None, embedded=False):
     path = "/" + path.lstrip("/")
     upstream_url = f"{ORIGIN}{path}"
     if query:
@@ -56,12 +56,23 @@ def fetch_upstream(path, query, method, request_headers, body=None):
         try:
             text_payload = payload.decode("utf-8", errors="replace")
             text_payload = AD_SCRIPT.sub("", text_payload)
+            text_payload = text_payload.replace(
+                "navigator.serviceWorker.register('/service-worker.js');",
+                "void 0;",
+            )
+            if embedded:
+                startup = '''<script>
+history.replaceState(null, '', '/?embed=1');
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(registrations =>
+    Promise.all(registrations.map(registration => registration.unregister()))
+  ).catch(() => {});
+}
+</script>'''
+                text_payload = text_payload.replace("<head>", "<head>" + startup, 1)
 
             # Inject crossorigin to bypass JS CORS blocks
             text_payload = re.sub(r'<script type="module"', '<script type="module" crossorigin', text_payload)
-
-            # Stop Service Worker from crashing
-            text_payload = text_payload.replace("navigator.serviceWorker.register('/service-worker.js');", "// SW disabled")
 
             payload = text_payload.encode("utf-8")
         except Exception:
@@ -130,7 +141,8 @@ class handler(BaseHTTPRequestHandler):
                 body = self.rfile.read(length) if length > 0 else None
 
             status, headers, payload = fetch_upstream(
-                path, urlencode(query_pairs), self.command, self.headers, body
+                path, urlencode(query_pairs), self.command, self.headers, body,
+                embedded="1" in params.get("embed", []),
             )
 
             self.send_response(status)
