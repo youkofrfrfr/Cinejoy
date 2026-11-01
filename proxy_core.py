@@ -1,6 +1,6 @@
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urljoin
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 from pathlib import Path
 import re
@@ -23,8 +23,92 @@ def load_local_asset(path):
         return None
 
 
+def proxy_media_url(upstream_url, query, method, request_headers, body=None):
+    params = parse_qs(query, keep_blank_values=True)
+    target = params.get("url", [""])[0]
+    if not target.startswith(("http://", "https://")):
+        return 400, {"Content-Type": "text/plain; charset=utf-8"}, b"Invalid media URL"
+
+    excluded = {
+        "host", "connection", "content-length", "origin", "referer",
+        "cookie", "accept-encoding",
+    }
+    headers = {
+        key: value for key, value in request_headers.items()
+        if key.lower() not in excluded
+    }
+    headers["User-Agent"] = "Mozilla/5.0"
+    headers["Referer"] = target
+    request = Request(target, data=body, headers=headers, method=method)
+
+    try:
+        response = UPSTREAM_OPENER.open(request, timeout=30)
+        status = response.status
+        payload = response.read()
+        response_headers = response.headers
+    except HTTPError as error:
+        status = error.code
+        payload = error.read()
+        response_headers = error.headers
+    except URLError as error:
+        status = 502
+        payload = str(error).encode("utf-8")
+        response_headers = {"Content-Type": "text/plain; charset=utf-8"}
+
+    content_type = response_headers.get("Content-Type", "")
+    is_playlist = (
+        "mpegurl" in content_type.lower()
+        or ".m3u8" in target.lower()
+        or payload.lstrip().startswith(b"#EXTM3U")
+    )
+    if is_playlist:
+        try:
+            text = payload.decode("utf-8", errors="replace")
+            lines = []
+            host = request_headers.get("Host") or request_headers.get("host") or "localhost"
+            scheme = "https" if request_headers.get("X-Forwarded-Proto") == "https" else "http"
+            media_base = scheme + "://" + host
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    absolute = urljoin(target, stripped)
+                    media_query = urlencode({"url": absolute})
+                    line = media_base + "/_media_proxy?" + media_query
+                elif "#EXT-X-KEY:" in line or "#EXT-X-MAP:" in line or "#EXT-X-MEDIA:" in line:
+                    line = re.sub(
+                        r'URI="([^"]+)"',
+                        lambda match: 'URI="' + media_base + "/_media_proxy?" + urlencode({"url": urljoin(target, match.group(1))}) + '"',
+                        line,
+                    )
+                lines.append(line)
+            payload = "\n".join(lines).encode("utf-8")
+            content_type = "application/vnd.apple.mpegurl"
+        except Exception:
+            pass
+
+    if (
+        not payload.lstrip().startswith(b"#EXTM3U")
+        and re.search(r"/(?:1080p|720p|480p)/", target, re.IGNORECASE)
+        and re.search(r"\.(?:jpg|jpeg|png|mp4)$", target, re.IGNORECASE)
+    ):
+        content_type = "video/mp4"
+
+    filtered = {
+        "Content-Type": content_type or "application/octet-stream",
+        "Content-Length": str(len(payload)),
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
+    }
+    for key in ("Content-Range", "Accept-Ranges", "Content-Disposition", "ETag", "Last-Modified"):
+        if response_headers.get(key):
+            filtered[key] = response_headers.get(key)
+    return status, filtered, payload
+
+
 def fetch_upstream(path, query, method, request_headers, body=None, embedded=False):
     path = "/" + path.lstrip("/")
+    if path == "/_media_proxy":
+        return proxy_media_url(path, query, method, request_headers, body)
     if method in {"GET", "HEAD"} and path.startswith("/_app/immutable/"):
         payload = load_local_asset(path)
         if payload is not None:
@@ -64,6 +148,52 @@ def fetch_upstream(path, query, method, request_headers, body=None, embedded=Fal
             text = text.replace("navigator.serviceWorker.register('/service-worker.js');", "void 0;")
             startup = '''<script>
 history.replaceState(null, '', '/?embed=1');
+(function () {
+  function mediaProxy(value) {
+    try {
+      var url = typeof value === 'string' ? value : (value && value.url ? value.url : String(value || ''));
+      if (/^https?:\\/\\//i.test(url) && new URL(url, location.href).origin !== location.origin) {
+        return '/_media_proxy?' + new URLSearchParams({url: url});
+      }
+    } catch (_) {}
+    return value;
+  }
+  var originalFetch = window.fetch;
+  if (originalFetch) {
+    window.fetch = function (input, init) {
+      var value = typeof input === 'string' ? input : (input && input.url ? input.url : input);
+      var proxied = mediaProxy(value);
+      if (typeof input !== 'string' && input && input.url && proxied !== value) {
+        input = new Request(proxied, input);
+      } else if (typeof input === 'string') {
+        input = proxied;
+      }
+      return originalFetch.call(window, input, init);
+    };
+  }
+  var originalXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    var args = Array.prototype.slice.call(arguments);
+    args[1] = mediaProxy(url);
+    return originalXHROpen.apply(this, args);
+  };
+  function rewriteMediaAttributes(root) {
+    root.querySelectorAll && root.querySelectorAll('video[src], source[src], track[src]').forEach(function (element) {
+      var src = element.getAttribute('src');
+      var proxied = mediaProxy(src);
+      if (proxied !== src) element.setAttribute('src', proxied);
+    });
+  }
+  rewriteMediaAttributes(document);
+  new MutationObserver(function (mutations) {
+    mutations.forEach(function (mutation) {
+      rewriteMediaAttributes(mutation.target);
+      mutation.addedNodes.forEach(function (node) {
+        if (node.nodeType === 1) rewriteMediaAttributes(node);
+      });
+    });
+  }).observe(document.documentElement, {subtree: true, childList: true, attributes: true, attributeFilter: ['src']});
+})();
 (function () {
   var storageKey = 'cinejoy-error-logs-v1';
   var originalError = console.error ? console.error.bind(console) : function () {};
