@@ -10,7 +10,7 @@
           "value": "1"
         }
       ],
-      "dest": "/api/proxy?path=%2F&embed=1"
+      "dest": "/api/proxy?path=sec.html&embed=1"
     },
     {
       "src": "/cinejoy",

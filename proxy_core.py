@@ -2,6 +2,7 @@ from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+from pathlib import Path
 import re
 
 ORIGIN = "https://cinejoy.pk"
@@ -10,8 +11,30 @@ AD_SCRIPT = re.compile(
     r"(?is)<script>\s*\(function \(\) \{\s*var adPref = localStorage\.getItem\(\"addies\"\).*?"
     r"\}\)\(\);\s*</script>"
 )
+
+LOCAL_ASSETS = Path(__file__).resolve().parent / "_app" / "immutable"
+
+
+def load_local_asset(path):
+    asset = LOCAL_ASSETS / path.removeprefix("/_app/immutable/").lstrip("/")
+    try:
+        return asset.read_bytes()
+    except (FileNotFoundError, IsADirectoryError, OSError):
+        return None
+
+
 def fetch_upstream(path, query, method, request_headers, body=None, embedded=False):
     path = "/" + path.lstrip("/")
+    if method in {"GET", "HEAD"} and path.startswith("/_app/immutable/"):
+        payload = load_local_asset(path)
+        if payload is not None:
+            return 200, {
+                "Content-Type": "application/javascript; charset=utf-8",
+                "Content-Length": str(len(payload)),
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            }, payload
+
     upstream_url = f"{ORIGIN}{path}"
     if query:
         upstream_url += "?" + query
@@ -36,7 +59,14 @@ def fetch_upstream(path, query, method, request_headers, body=None, embedded=Fal
 
     content_type = response_headers.get("Content-Type", "")
     if "text/html" in content_type:
-        payload = AD_SCRIPT.sub("", payload.decode("utf-8", errors="replace")).encode("utf-8")
+        text = AD_SCRIPT.sub("", payload.decode("utf-8", errors="replace"))
+        if embedded:
+            text = text.replace(
+                "<head>",
+                "<head><script>history.replaceState(null, '', '/?embed=1')</script>",
+                1,
+            )
+        payload = text.encode("utf-8")
 
     filtered_headers = {}
     excluded_response = {

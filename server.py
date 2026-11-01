@@ -23,7 +23,7 @@ class CinejoyHandler(SimpleHTTPRequestHandler):
             super().do_GET()
             return
 
-        upstream_path = "/sec.html" if request.path == "/cinejoy" else request.path
+        upstream_path = "/sec.html" if embedded and request.path in {"/cinejoy", "/"} else request.path
         query_pairs = [(key, value) for key, value in query_pairs if key != "embed"]
         body = None
         if self.command == "POST":

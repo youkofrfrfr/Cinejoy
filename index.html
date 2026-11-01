@@ -219,7 +219,7 @@
     dialog.showModal();
     document.querySelector('#continue').addEventListener('click', () => {
       const frame = document.querySelector('#cinejoy');
-      frame.src = '/cinejoy?embed=1';
+      frame.src = '/?embed=1';
       document.body.classList.add('ready');
       document.querySelector('#landing').classList.add('embedded');
       dialog.close();
