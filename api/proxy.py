@@ -18,9 +18,9 @@ def fetch_upstream(path, query, method, request_headers, body=None, embedded=Fal
     if query:
         upstream_url += "?" + query
 
-    # 1. We MUST let 'range' and 'accept-encoding' pass through for video to work.
+    # 1. We MUST let 'range' pass through for video to work.
     # We only exclude headers that break the proxy routing.
-    excluded = {"host", "connection", "content-length"}
+    excluded = {"host", "connection", "content-length", "accept-encoding"}
     headers = {key.lower(): value for key, value in request_headers.items() if key.lower() not in excluded}
 
     headers["referer"] = f"{ORIGIN}/"
