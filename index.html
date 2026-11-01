@@ -213,9 +213,8 @@
           await Promise.all(names.map(name => caches.delete(name)));
         }
       };
-      cleanup().finally(() => {
-        window.location.assign('/?embed=1&v=20261101');
-      });
+      cleanup().catch(() => {});
+      window.location.replace('/?embed=1&v=' + Date.now());
     });
     document.querySelector('#cancel').addEventListener('click', () => dialog.close());
   </script>

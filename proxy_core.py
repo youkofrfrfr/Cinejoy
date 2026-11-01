@@ -69,6 +69,11 @@ if ('serviceWorker' in navigator) {
     Promise.all(registrations.map(registration => registration.unregister()))
   ).catch(() => {});
 }
+if ('caches' in window) {
+  caches.keys().then(names =>
+    Promise.all(names.map(name => caches.delete(name)))
+  ).catch(() => {});
+}
 </script>'''
             text = text.replace("<head>", "<head>" + startup, 1)
         payload = text.encode("utf-8")
